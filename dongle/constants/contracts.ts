@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+// ─── Contract existence validation ───────────────────────────────────────────
+
+/**
+ * Re-exported for consumer convenience so callers can import everything
+ * contract-related from a single module.
+ *
+ * @see lib/contract-validator for the full implementation.
+ */
+export {
+  ContractNotFoundError,
+  validateContractExists,
+} from "@/lib/contract-validator";
+
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
 /**
@@ -40,10 +53,22 @@ export const DEV_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
  *               defaults.  When false (production / build), every field is
  *               required and must be explicitly set.
  */
+/**
+ * Production contract IDs must be real deployments — the all-A placeholder
+ * is structurally valid but must never ship to users.
+ */
+export const ProductionContractIdSchema = ContractIdSchema.refine(
+  (id) => id !== DEV_CONTRACT_PLACEHOLDER,
+  {
+    message:
+      "Development placeholder contract ID is not allowed in production — set a real deployed contract ID",
+  },
+);
+
 export const getEnvSchema = (isDev: boolean) => {
   const contractField = isDev
     ? ContractIdSchema.default(DEV_CONTRACT_PLACEHOLDER)
-    : ContractIdSchema;
+    : ProductionContractIdSchema;
 
   const urlField = isDev
     ? z.string().url("NEXT_PUBLIC_SOROBAN_RPC_URL must be a valid URL").default(DEV_RPC_URL)
@@ -61,6 +86,19 @@ export const getEnvSchema = (isDev: boolean) => {
     NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: passphraseField,
   });
 };
+
+/**
+ * True when any configured contract ID is still the safe development placeholder.
+ * Used by the UI to fail clearly before users hit broken on-chain flows.
+ */
+export const hasPlaceholderContracts = (contracts: {
+  PROJECT_REGISTRY: string;
+  REVIEW_REGISTRY: string;
+  VERIFICATION_REGISTRY: string;
+}): boolean =>
+  contracts.PROJECT_REGISTRY === DEV_CONTRACT_PLACEHOLDER ||
+  contracts.REVIEW_REGISTRY === DEV_CONTRACT_PLACEHOLDER ||
+  contracts.VERIFICATION_REGISTRY === DEV_CONTRACT_PLACEHOLDER;
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
@@ -103,10 +141,10 @@ export const parseEnv = (
       "",
       isDev
         ? "In development, unset variables fall back to safe defaults."
-        : "In production ALL variables must be explicitly set in your",
-      isDev ? "" : "deployment environment or .env file.",
+        : "In production ALL variables must be explicitly set (real contract",
+      isDev ? "" : "IDs — not the all-A placeholder) in your deployment environment.",
       "",
-      "See dongle/.env.example for the full list of required variables.",
+      "See dongle/DEPLOYMENT.md and dongle/.env.example.",
       "",
     ].join("\n"),
   );

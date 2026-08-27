@@ -87,6 +87,12 @@ export interface Project {
   domain?: string;
   ownerAddress?: string;
   repositoryMetadata?: RepositoryMetadata; // Cached repository metadata
+  /**
+   * Optional list of Soroban contract IDs associated with this project.
+   * Each entry must be a valid Soroban contract address: starts with 'C',
+   * followed by 55 base-32 characters (A-Z, 2-7), total length 56.
+   */
+  contractAddresses?: string[];
 }
 
 export type ClaimProofType = "website" | "repository" | "admin_review";
@@ -167,6 +173,36 @@ export interface ProjectModerationAction {
 export interface ProjectReportValidationError {
   field: "reason" | "explanation";
   message: string;
+}
+
+export type ProjectSubmissionModerationStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "flagged";
+
+export interface ProjectSubmission {
+  id: string;
+  projectId: string;
+  projectName: string;
+  submittedBy: string;
+  submittedAt: string;
+  status: ProjectSubmissionModerationStatus;
+  qualityScore: number;
+  flagReasons: string[];
+  statusUpdatedAt?: string;
+  statusUpdatedBy?: string;
+  rejectionReason?: string;
+}
+
+export interface ProjectSubmissionModerationAction {
+  id: string;
+  submissionId: string;
+  projectId: string;
+  moderatorAddress: string;
+  action: ProjectSubmissionModerationStatus;
+  reason: string;
+  timestamp: string;
 }
 
 /**

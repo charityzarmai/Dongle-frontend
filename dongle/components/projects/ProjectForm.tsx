@@ -10,13 +10,18 @@ import { TextAreaField } from "@/components/ui/TextAreaField";
 import { TagInput } from "@/components/ui/TagInput";
 import { sorobanService } from "@/services/stellar/soroban.service";
 import { projectService } from "@/services/project/project.service";
-import { Rocket, CheckCircle2 } from "lucide-react";
+import { projectSubmissionService } from "@/services/project/project-submission.service";
+import { walletService } from "@/services/wallet/wallet.service";
+import { generateProjectIdFromName } from "@/lib/project-id";
+import { computeQualityScore, detectSuspiciousFlags } from "@/lib/submission-quality";
+import { Rocket, CheckCircle2, Plus, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import TransactionProgressPanel from "@/components/transactions/TransactionProgressPanel";
 import { useOnChainTransaction } from "@/hooks/useOnChainTransaction";
 import { useDraft } from "@/hooks/useDraft";
 import { DraftIndicator } from "@/components/projects/DraftIndicator";
 import { SubmissionChecklist } from "@/components/projects/SubmissionChecklist";
+import { useWallet } from "@/context/wallet.context";
 
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -27,6 +32,10 @@ import { validateRepositoryUrl, normalizeRepositoryUrl } from "@/lib/repository"
 import { CATEGORY_FORM_OPTIONS, CATEGORY_FORM_MAP } from "@/types/project";
 import type { Project } from "@/types/project";
 import { trackProjectSubmit } from "@/lib/analytics";
+import { isValidSorobanContractId } from "@/lib/stellar-address";
+import { isBlank } from "@/lib/string";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
+import { logger } from "@/lib/logger";
 
 const urlSchema = z.string().transform((val, ctx) => {
   try {
@@ -41,7 +50,7 @@ const urlSchema = z.string().transform((val, ctx) => {
 });
 
 const optionalUrlSchema = z.string().transform((val, ctx) => {
-  if (val.trim().length === 0) return "";
+  if (isBlank(val)) return "";
   try {
     return normalizeUrl(val);
   } catch {
@@ -54,7 +63,7 @@ const optionalUrlSchema = z.string().transform((val, ctx) => {
 });
 
 const repositoryUrlSchema = z.string().transform((val, ctx) => {
-  if (val.trim().length === 0) return "";
+  if (isBlank(val)) return "";
   
   const validation = validateRepositoryUrl(val);
   
@@ -67,6 +76,24 @@ const repositoryUrlSchema = z.string().transform((val, ctx) => {
   }
   
   return normalizeRepositoryUrl(val);
+});
+
+/**
+ * Validates a single Soroban contract ID string.
+ * Accepts an empty string (field left blank) or a valid 56-char C… address.
+ */
+const contractIdSchema = z.string().transform((val, ctx) => {
+  if (isBlank(val)) return "";
+  const normalized = val.trim().toUpperCase();
+  if (!isValidSorobanContractId(normalized)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Invalid Soroban contract ID. Must be 56 characters starting with 'C' (A–Z, 2–7 only).",
+    });
+    return z.NEVER;
+  }
+  return normalized;
 });
 
 const projectSchema = z.object({
@@ -83,6 +110,13 @@ const projectSchema = z.object({
   docsUrl: optionalUrlSchema,
   auditReportUrl: optionalUrlSchema,
   bugBountyUrl: optionalUrlSchema,
+  /**
+   * Up to 5 optional Soroban contract addresses.
+   * Each entry is either an empty string (ignored on save) or a valid 56-char
+   * contract ID.  The array itself is always present; individual slots can be
+   * left blank.
+   */
+  contractAddresses: z.array(contractIdSchema).max(5, "You can add at most 5 contract addresses"),
 });
 
 type ProjectFormValues = z.infer<typeof projectSchema>;
@@ -110,9 +144,15 @@ export default function ProjectForm({
 
   const router = useRouter();
   const { progress, run, retry, isInProgress } = useOnChainTransaction();
-  
-  // Draft management
-  const draft = useDraft({ mode, projectId, autoSave: true });
+  const { publicKey } = useWallet();
+
+  // Draft management – passes wallet address so drafts sync to the server
+  const draft = useDraft({
+    mode,
+    projectId,
+    autoSave: true,
+    walletAddress: publicKey,
+  });
   const [draftRestored, setDraftRestored] = React.useState(false);
 
   const {
@@ -135,15 +175,21 @@ export default function ProjectForm({
       docsUrl: initialData?.docsUrl || "",
       auditReportUrl: initialData?.auditReportUrl || "",
       bugBountyUrl: initialData?.bugBountyUrl || "",
+      contractAddresses: initialData?.contractAddresses?.length
+        ? initialData.contractAddresses
+        : [],
     },
   });
+
+
 
   // Show notification when draft is restored
   useEffect(() => {
     if (draft.loadedDraft) {
       setDraftRestored(true);
+      reset(draft.loadedDraft);
     }
-  }, [draft.loadedDraft]);
+  }, [draft.loadedDraft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useUnsavedChanges(isDirty, isSubmitting);
 
@@ -171,12 +217,19 @@ export default function ProjectForm({
 
       setIsSubmitting(true);
       try {
+        // Strip any blank entries left in the contractAddresses list
+        const cleanedPayload = {
+          ...payload,
+          contractAddresses: (payload.contractAddresses ?? []).filter(
+            (a) => a.trim().length > 0,
+          ),
+        };
         const result = await run((onPhaseChange) => {
           // Normalize the form value (e.g. "defi") to its canonical display label
           // (e.g. "DeFi / DEX") before submitting to the contract.
-          const canonicalCategory = CATEGORY_FORM_MAP[payload.primaryCategory] ?? payload.primaryCategory;
+          const canonicalCategory = CATEGORY_FORM_MAP[cleanedPayload.primaryCategory] ?? cleanedPayload.primaryCategory;
           const contractPayload = {
-            ...payload,
+            ...cleanedPayload,
             category: canonicalCategory,
           };
           if (mode === "edit" && projectId) {
@@ -186,10 +239,41 @@ export default function ProjectForm({
         });
 
         if (result) {
+          if (mode !== "edit") {
+            try {
+              let submittedBy = "unknown";
+              try {
+                submittedBy = await walletService.getPublicKey();
+              } catch {
+                // wallet may disconnect after tx
+              }
+
+              const qualityScore = computeQualityScore(cleanedPayload);
+              const existingNames = projectService
+                .getAllProjects()
+                .map((p) => p.name);
+              const flagReasons = detectSuspiciousFlags(
+                cleanedPayload,
+                qualityScore,
+                existingNames,
+              );
+
+              projectSubmissionService.recordSubmission({
+                projectId: generateProjectIdFromName(cleanedPayload.name),
+                projectName: cleanedPayload.name,
+                submittedBy,
+                qualityScore,
+                flagReasons,
+              });
+            } catch (moderationError) {
+              console.error("[ProjectForm] Failed to record submission moderation:", moderationError);
+            }
+          }
+
           trackProjectSubmit({
             success: true,
             mode,
-            category: CATEGORY_FORM_MAP[payload.primaryCategory] ?? payload.primaryCategory,
+            category: CATEGORY_FORM_MAP[cleanedPayload.primaryCategory] ?? cleanedPayload.primaryCategory,
             projectId: mode === "edit" ? projectId : undefined,
           });
           // Clear draft after successful submission
@@ -206,6 +290,10 @@ export default function ProjectForm({
           });
         }
       } catch (error) {
+        logger.error("Soroban project operation failed", {
+          operation: mode === "edit" ? "updateProject" : "registerProject",
+          userAction: mode === "edit" ? "updating a project" : "registering a project",
+        }, error);
         trackProjectSubmit({
           success: false,
           mode,
@@ -268,8 +356,8 @@ export default function ProjectForm({
     setDiscardDialogOpen(true);
   };
 
-  const confirmDiscardDraft = () => {
-    draft.deleteDraft();
+  const confirmDiscardDraft = async () => {
+    await draft.deleteDraft();
     setDraftRestored(false);
     reset({
       name: initialData?.name || "",
@@ -280,11 +368,17 @@ export default function ProjectForm({
       githubUrl: initialData?.githubUrl || "",
       logoUrl: initialData?.logoUrl || "",
       docsUrl: initialData?.docsUrl || "",
+      contractAddresses: initialData?.contractAddresses || [],
     });
     setDiscardDialogOpen(false);
   };
 
   return (
+    <ErrorBoundary
+      operation={mode === "edit" ? "Project update form" : "Project registration form"}
+      userAction={mode === "edit" ? "updating a project" : "registering a project"}
+      onReset={() => reset()}
+    >
     <Card
       variant="glass"
       padding="lg"
@@ -317,6 +411,8 @@ export default function ProjectForm({
         <DraftIndicator
           hasDraft={draft.hasDraft}
           lastSaved={draft.lastSaved}
+          isSaving={draft.isSaving}
+          saveError={draft.saveError}
           onDiscard={handleDiscardDraft}
         />
 
@@ -382,7 +478,7 @@ export default function ProjectForm({
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <FormField
-            label="GitHub URL (Optional)"
+            label="Repository URL (Optional)"
             placeholder="https://github.com/owner/repo"
             {...register("githubUrl")}
             error={errors.githubUrl?.message}
@@ -414,6 +510,109 @@ export default function ProjectForm({
             placeholder="https://..."
             {...register("bugBountyUrl")}
             error={errors.bugBountyUrl?.message}
+          />
+        </div>
+
+        {/* Contract Addresses */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Contract Addresses{" "}
+                <span className="font-normal text-zinc-400 dark:text-zinc-500">
+                  (Optional)
+                </span>
+              </label>
+              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Soroban contract IDs associated with this project — 56 characters
+                starting with&nbsp;'C'.
+              </p>
+            </div>
+          </div>
+
+          <Controller
+            name="contractAddresses"
+            control={control}
+            render={({ field }) => {
+              const addresses: string[] = field.value ?? [];
+
+              const handleAdd = () => {
+                if (addresses.length < 5) {
+                  field.onChange([...addresses, ""]);
+                }
+              };
+
+              const handleChange = (index: number, value: string) => {
+                const next = addresses.map((a, i) => (i === index ? value : a));
+                field.onChange(next);
+              };
+
+              const handleRemove = (index: number) => {
+                field.onChange(addresses.filter((_, i) => i !== index));
+              };
+
+              return (
+                <div className="space-y-2">
+                  {addresses.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleAdd}
+                      className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 text-sm text-zinc-500 dark:text-zinc-400 hover:border-blue-400 dark:hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add a contract address
+                    </button>
+                  ) : (
+                    <>
+                      {addresses.map((addr, index) => (
+                        <div key={index} className="flex items-start gap-2">
+                          <div className="flex-1">
+                            <input
+                              type="text"
+                              value={addr}
+                              onChange={(e) => handleChange(index, e.target.value)}
+                              placeholder="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                              aria-label={`Contract address ${index + 1}`}
+                              className="w-full font-mono text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 transition-colors"
+                            />
+                            {errors.contractAddresses?.[index]?.message && (
+                              <p className="mt-1 text-sm text-red-500 dark:text-red-400">
+                                {errors.contractAddresses[index].message}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemove(index)}
+                            aria-label={`Remove contract address ${index + 1}`}
+                            className="mt-1 p-2 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+
+                      {addresses.length < 5 && (
+                        <button
+                          type="button"
+                          onClick={handleAdd}
+                          className="flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Add another address
+                        </button>
+                      )}
+                    </>
+                  )}
+
+                  {errors.contractAddresses?.root?.message && (
+                    <p className="text-sm text-red-500 dark:text-red-400">
+                      {errors.contractAddresses.root.message}
+                    </p>
+                  )}
+                </div>
+              );
+            }}
           />
         </div>
 
@@ -475,9 +674,10 @@ export default function ProjectForm({
         confirmLabel="Discard Draft"
         cancelLabel="Keep Draft"
         variant="danger"
-        onConfirm={confirmDiscardDraft}
+        onConfirm={() => void confirmDiscardDraft()}
         onCancel={() => setDiscardDialogOpen(false)}
       />
     </Card>
+    </ErrorBoundary>
   );
 }

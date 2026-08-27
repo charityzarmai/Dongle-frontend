@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import {
+  useParams,
+  useRouter } from "next/navigation";
 import { projectService } from "@/services/project/project.service";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -9,22 +11,27 @@ import { Spinner } from "@/components/ui/Spinner";
 import VerificationStatus from "@/components/verify/VerificationStatus";
 import ReviewList from "@/components/reviews/ReviewList";
 import ReviewForm from "@/components/reviews/ReviewForm";
+import {
+  RatingDistributionSummary,
+  computeRatingDistribution,
+} from "@/components/reviews/RatingDistributionSummary";
 import ProjectImage from "@/components/projects/ProjectImage";
 import { RepositoryMetadata } from "@/components/projects/RepositoryMetadata";
-import { Review, ReviewReport, ReviewReportReason } from "@/types/review";
+import { Review,
+  ReviewReport,
+  ReviewReportReason } from "@/types/review";
 import { reviewReportService } from "@/services/review/review-report.service";
 import { projectReportService } from "@/services/project/project-report.service";
 import { projectClaimService } from "@/services/project/project-claim.service";
 import { formatDate } from "@/lib/date";
 import { reviewService, getReviewPersistenceLabel } from "@/services/review/review.service";
-import { reviewReportService } from "@/services/review/review-report.service";
 import { sorobanService } from "@/services/stellar/soroban.service";
-import { extractDomain } from "@/lib/url";
 import { useWalletPageGate } from "@/hooks/useWalletPageGate";
 import { useConfirm } from "@/hooks/useConfirm";
-import WalletStatePanel, {
+import WalletStatePanel,
+  {
   WalletDisconnectedBanner,
-} from "@/components/wallet/WalletStatePanel";
+  } from "@/components/wallet/WalletStatePanel";
 import {
   AlertCircle,
   ArrowLeft,
@@ -36,27 +43,28 @@ import {
   GitBranch,
   Globe,
   Info,
-  Bookmark,
-  BookmarkCheck,
-  Shield,
-  Bug,
   Megaphone,
   MessageSquare,
   Shield,
   Star,
-  UserPlus,
+  UserPlus
 } from "lucide-react";
 import { toast } from "sonner";
 import { ReportProjectModal } from "@/components/projects/ReportProjectModal";
-import { ClaimProjectModal } from "@/components/projects/ClaimProjectModal";
 import { ReportReviewModal } from "@/components/reviews/ReportReviewModal";
+import { reviewReportService } from "@/services/review/review-report.service";
 import { useSavedProjects } from "@/hooks/useSavedProjects";
 import { updateService } from "@/services/update/update.service";
 import { abbreviateStellarAddress } from "@/lib/stellar-address";
+import { ContractAddressList } from "@/components/projects/ContractAddressList";
 import { ProjectUpdate, UpdateType } from "@/types/update";
 import UpdateList from "@/components/updates/UpdateList";
 import UpdateForm from "@/components/updates/UpdateForm";
 import { VerificationBadge } from "@/components/projects/VerificationBadge";
+import { ProjectStatusBanner } from "@/components/projects/ProjectStatusBanner";
+import { ClaimStatusBanner } from "@/components/projects/ClaimStatusBanner";
+import { getApprovedProjectUrls } from "@/lib/externalLinkWarning";
+import { SafeExternalLink } from "@/components/ui/SafeExternalLink";
 import { recentViewsService } from "@/services/recent-views/recent-views.service";
 import { trackProjectView, trackReviewSubmit } from "@/lib/analytics";
 
@@ -81,8 +89,10 @@ export default function ProjectDetailPage() {
   const [isClaiming, setIsClaiming] = useState(false);
   const [isReportingReview, setIsReportingReview] = useState(false);
   const [reportingReview, setReportingReview] = useState<Review | null>(null);
-  const [reviewSort, setReviewSort] = useState<"newest" | "highest" | "lowest" | "mine">("newest");
+  const [reviewSort, setReviewSort] = useState<"newest" | "oldest" | "highest" | "lowest" | "mine">("newest");
+  const [ratingFilter, setRatingFilter] = useState<string>("all");
   const [verificationStatus, setVerificationStatus] = useState<"NONE" | "PENDING" | "VERIFIED" | "REJECTED" | null>(null);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
   const [updates, setUpdates] = useState<ProjectUpdate[]>([]);
   const [isAddingUpdate, setIsAddingUpdate] = useState(false);
   const [editingUpdate, setEditingUpdate] = useState<ProjectUpdate | null>(null);
@@ -117,6 +127,7 @@ export default function ProjectDetailPage() {
         
         // Fetch verification status with cancellation support
         const fetchVerification = async () => {
+          if (!cancelled) setVerificationError(null);
           try {
             const status = await sorobanService.getVerificationStatus(projectId, abortController.signal);
             if (!cancelled) {
@@ -125,7 +136,9 @@ export default function ProjectDetailPage() {
           } catch (error) {
             if (!cancelled) {
               console.error("Failed to fetch verification status:", error);
-              setVerificationStatus("NONE");
+              setVerificationError(
+                error instanceof Error ? error.message : "Failed to load verification status",
+              );
             }
           }
         };
@@ -143,6 +156,21 @@ export default function ProjectDetailPage() {
       abortController.abort();
     };
   }, [projectId, gate.publicKey]);
+
+  const retryVerification = React.useCallback(() => {
+    setVerificationError(null);
+    setVerificationStatus(null);
+    const abortController = new AbortController();
+    void sorobanService
+      .getVerificationStatus(projectId, abortController.signal)
+      .then(setVerificationStatus)
+      .catch((err) => {
+        console.error("Failed to fetch verification status:", err);
+        setVerificationError(
+          err instanceof Error ? err.message : "Failed to load verification status",
+        );
+      });
+  }, [projectId]);
 
   const actualRating = React.useMemo(() => {
     if (reviews.length === 0) return project?.rating || 0;
@@ -256,29 +284,48 @@ export default function ProjectDetailPage() {
     setReportingReview(null);
   };
 
-  const ratingDistribution = React.useMemo(() => {
-    const dist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-    reviews.forEach((r) => {
-      if (r.rating >= 1 && r.rating <= 5) {
-        dist[r.rating as keyof typeof dist]++;
-      }
-    });
-    return dist;
-  }, [reviews]);
+  const ratingDistribution = React.useMemo(
+    () => computeRatingDistribution(reviews),
+    [reviews],
+  );
 
   const sortedReviews = React.useMemo(() => {
     let list = [...reviews];
     if (reviewSort === "mine") {
       list = list.filter((r) => r.userAddress === gate.publicKey);
-    } else if (reviewSort === "highest") {
+    }
+    if (ratingFilter !== "all") {
+      const ratingNum = parseInt(ratingFilter, 10);
+      list = list.filter((r) => r.rating === ratingNum);
+    }
+    if (reviewSort === "highest") {
       list.sort((a, b) => b.rating - a.rating || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     } else if (reviewSort === "lowest") {
       list.sort((a, b) => a.rating - b.rating || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } else if (reviewSort === "oldest") {
+      list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     } else {
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
     return list;
-  }, [reviews, reviewSort, gate.publicKey]);
+  }, [reviews, reviewSort, ratingFilter, gate.publicKey]);
+
+  const projectEmptyMessage = React.useMemo(() => {
+    if (reviews.length === 0) {
+      return "No reviews yet. Be the first to leave one!";
+    }
+    const activeFilters: string[] = [];
+    if (reviewSort === "mine") {
+      activeFilters.push("your reviews");
+    }
+    if (ratingFilter !== "all") {
+      activeFilters.push(`${ratingFilter}-star rating`);
+    }
+    if (activeFilters.length > 0) {
+      return `No reviews found matching ${activeFilters.join(" and ")}. Try adjusting your filter controls.`;
+    }
+    return "No reviews match the selected filter options.";
+  }, [reviews.length, reviewSort, ratingFilter]);
 
   const handleEdit = (review: Review) => {
     setEditingReview(review);
@@ -349,6 +396,32 @@ export default function ProjectDetailPage() {
     setEditingReview(null);
   };
 
+  const handleVoteHelpful = async (id: string) => {
+    if (!gate.publicKey) {
+      toast.error("Please connect your wallet to vote");
+      return;
+    }
+    const result = await reviewService.voteHelpful(id, gate.publicKey);
+    if (result.success) {
+      setReviews(await reviewService.getReviewsByProject(projectId));
+    } else {
+      toast.error(result.error || "Failed to submit vote");
+    }
+  };
+
+  const handleVoteUnhelpful = async (id: string) => {
+    if (!gate.publicKey) {
+      toast.error("Please connect your wallet to vote");
+      return;
+    }
+    const result = await reviewService.voteUnhelpful(id, gate.publicKey);
+    if (result.success) {
+      setReviews(await reviewService.getReviewsByProject(projectId));
+    } else {
+      toast.error(result.error || "Failed to submit vote");
+    }
+  };
+
   const handleAddUpdate = () => {
     setIsAddingUpdate(true);
   };
@@ -369,7 +442,6 @@ export default function ProjectDetailPage() {
         {
           projectId: project.id,
           ...data,
-          authorAddress: gate.publicKey,
         },
         gate.publicKey
       );
@@ -412,33 +484,7 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const handleExternalLinkClick = async (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
-    e.preventDefault();
-    
-    // Check if the domain is verified and can bypass the warning
-    // Verified project domains can bypass the warning if approved (i.e. verificationStatus is VERIFIED).
-    const targetDomain = extractDomain(url);
-    const isVerifiedDomain = verificationStatus === "VERIFIED";
-
-    if (isVerifiedDomain) {
-      // Bypass the warning and open link safely
-      window.open(url, "_blank", "noopener,noreferrer");
-      return;
-    }
-
-    // Otherwise, show confirmation interstitial/modal
-    const ok = await confirm({
-      title: "External Link Safety Warning",
-      description: `You are about to visit the following external domain: ${targetDomain}.\nFull URL: ${url}\n\nMake sure you trust this site before proceeding.`,
-      confirmLabel: "Proceed to Site",
-      cancelLabel: "Stay Here",
-      variant: "warning",
-    });
-
-    if (ok) {
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  };
+  const approvedExternalUrls = project ? getApprovedProjectUrls(project) : [];
 
   if (isLoading) {
     return (
@@ -491,30 +537,8 @@ export default function ProjectDetailPage() {
             Back
           </button>
 
-          {/* Warning Banner */}
-          {verificationStatus === "REJECTED" && (
-            <div className="mb-6 p-5 bg-red-50 dark:bg-red-950/20 text-red-800 dark:text-red-300 rounded-3xl border border-red-200 dark:border-red-900/50 shadow-sm flex items-start gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
-              <AlertCircle className="w-6 h-6 shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
-              <div>
-                <h4 className="font-bold text-base mb-1">High Risk Warning: Rejected Project</h4>
-                <p className="text-sm opacity-90 leading-relaxed">
-                  This project was rejected by the community verification process. Please be extremely cautious: do not connect your wallet, share private keys, or interact with external links unless you are absolutely sure of its safety.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {(verificationStatus === "NONE" || verificationStatus === "PENDING") && (
-            <div className="mb-6 p-5 bg-amber-50 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300 rounded-3xl border border-amber-200 dark:border-amber-900/50 shadow-sm flex items-start gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
-              <Info className="w-6 h-6 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-              <div>
-                <h4 className="font-bold text-base mb-1">Unverified Project Context</h4>
-                <p className="text-sm opacity-90 leading-relaxed">
-                  This project has not completed the community verification process. It is currently unverified. Please exercise due diligence when interacting with the project and checking external resources.
-                </p>
-              </div>
-            </div>
-          )}
+          {/* Verification Status Banner */}
+          <ProjectStatusBanner status={verificationStatus} />
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Main Content */}
@@ -532,6 +556,15 @@ export default function ProjectDetailPage() {
                       )}
                     </div>
                     <h1 className="text-4xl font-bold mb-4">{project.name}</h1>
+                    {project.tags && project.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {project.tags.map((tag) => (
+                          <Badge key={tag} variant="secondary">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex items-center gap-6 text-sm text-zinc-500 dark:text-zinc-400">
                       <div className="flex items-center gap-2">
                         <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
@@ -612,12 +645,22 @@ export default function ProjectDetailPage() {
 
                   {activeTab === "updates" && (
                     <div className="space-y-4">
-                      {isOwner && !isAddingUpdate && (
-                        <Button variant="primary" onClick={handleAddUpdate}>
-                          <Megaphone className="w-4 h-4 mr-2" />
-                          Post Update
+                      <div className="flex items-center gap-3 flex-wrap">
+                        {isOwner && !isAddingUpdate && (
+                          <Button variant="primary" onClick={handleAddUpdate}>
+                            <Megaphone className="w-4 h-4 mr-2" />
+                            Post Update
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => router.push(`/projects/${projectId}/updates`)}
+                        >
+                          <ExternalLink className="w-4 h-4 mr-2" />
+                          View full feed
                         </Button>
-                      )}
+                      </div>
 
                       {isAddingUpdate && project && (
                         <UpdateForm
@@ -641,60 +684,56 @@ export default function ProjectDetailPage() {
                 {/* Links */}
                 <div className="flex flex-wrap gap-3">
                   {project.websiteUrl && (
-                    <a
+                    <SafeExternalLink
                       href={project.websiteUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => handleExternalLinkClick(e, project.websiteUrl!)}
+                      verificationStatus={verificationStatus}
+                      approvedUrls={approvedExternalUrls}
                     >
                       <Button variant="outline" size="sm">
                         <Globe className="w-4 h-4 mr-2" />
                         Website
                         <ExternalLink className="w-3 h-3 ml-1" />
                       </Button>
-                    </a>
+                    </SafeExternalLink>
                   )}
                   {project.githubUrl && (
-                    <a
+                    <SafeExternalLink
                       href={project.githubUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => handleExternalLinkClick(e, project.githubUrl!)}
+                      verificationStatus={verificationStatus}
+                      approvedUrls={approvedExternalUrls}
                     >
                       <Button variant="outline" size="sm">
                         <GitBranch className="w-4 h-4 mr-2" />
                         GitHub
                         <ExternalLink className="w-3 h-3 ml-1" />
                       </Button>
-                    </a>
+                    </SafeExternalLink>
                   )}
                   {project.auditReportUrl && (
-                    <a
+                    <SafeExternalLink
                       href={project.auditReportUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => handleExternalLinkClick(e, project.auditReportUrl!)}
+                      verificationStatus={verificationStatus}
+                      approvedUrls={approvedExternalUrls}
                     >
                       <Button variant="outline" size="sm" className="text-green-600 border-green-200 hover:bg-green-50 dark:hover:bg-green-900/20">
                         <Shield className="w-4 h-4 mr-2" />
                         Audit Report
                         <ExternalLink className="w-3 h-3 ml-1" />
                       </Button>
-                    </a>
+                    </SafeExternalLink>
                   )}
                   {project.bugBountyUrl && (
-                    <a
+                    <SafeExternalLink
                       href={project.bugBountyUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => handleExternalLinkClick(e, project.bugBountyUrl!)}
+                      verificationStatus={verificationStatus}
+                      approvedUrls={approvedExternalUrls}
                     >
                       <Button variant="outline" size="sm" className="text-amber-600 border-amber-200 hover:bg-amber-50 dark:hover:bg-amber-900/20">
                         <Bug className="w-4 h-4 mr-2" />
                         Bug Bounty
                         <ExternalLink className="w-3 h-3 ml-1" />
                       </Button>
-                    </a>
+                    </SafeExternalLink>
                   )}
                 </div>
               </div>
@@ -711,17 +750,38 @@ export default function ProjectDetailPage() {
                       </span>
                     )}
                   </h2>
-                  <div className="flex gap-2">
-                    <select
-                      value={reviewSort}
-                      onChange={(e) => setReviewSort(e.target.value as "newest" | "highest" | "lowest" | "mine")}
-                      className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                    >
-                      <option value="newest">Newest First</option>
-                      <option value="highest">Highest Rating</option>
-                      <option value="lowest">Lowest Rating</option>
-                      {gate.publicKey && <option value="mine">My Reviews</option>}
-                    </select>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1 text-sm">
+                      <span className="text-zinc-500 text-xs font-medium">Rating:</span>
+                      <select
+                        aria-label="Filter reviews by rating"
+                        value={ratingFilter}
+                        onChange={(e) => setRatingFilter(e.target.value)}
+                        className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      >
+                        <option value="all">All Ratings</option>
+                        <option value="5">5 Stars</option>
+                        <option value="4">4 Stars</option>
+                        <option value="3">3 Stars</option>
+                        <option value="2">2 Stars</option>
+                        <option value="1">1 Star</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1 text-sm">
+                      <span className="text-zinc-500 text-xs font-medium">Sort:</span>
+                      <select
+                        aria-label="Sort reviews"
+                        value={reviewSort}
+                        onChange={(e) => setReviewSort(e.target.value as "newest" | "oldest" | "highest" | "lowest" | "mine")}
+                        className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      >
+                        <option value="newest">Newest First</option>
+                        <option value="oldest">Oldest First</option>
+                        <option value="highest">Highest Rating</option>
+                        <option value="lowest">Lowest Rating</option>
+                        {gate.publicKey && <option value="mine">My Reviews</option>}
+                      </select>
+                    </div>
                     {!isAddingReview && !isOwner && (
                       <Button
                         variant="primary"
@@ -733,38 +793,12 @@ export default function ProjectDetailPage() {
                   </div>
                 </div>
 
-                {reviews.length > 0 && (
-                  <div className="mb-8 p-6 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl border border-zinc-200 dark:border-zinc-800 flex flex-col md:flex-row gap-8 items-center">
-                    <div className="text-center md:text-left">
-                      <div className="text-5xl font-black mb-1">{actualRating}</div>
-                      <div className="flex items-center justify-center md:justify-start gap-1 mb-2">
-                        {[1, 2, 3, 4, 5].map((star) => (
-                          <Star key={star} className={`w-4 h-4 ${star <= actualRating ? 'text-yellow-500 fill-yellow-500' : 'text-zinc-300 dark:text-zinc-700'}`} />
-                        ))}
-                      </div>
-                      <div className="text-sm text-zinc-500 dark:text-zinc-400">{reviews.length} total reviews</div>
-                    </div>
-                    <div className="flex-1 w-full max-w-sm space-y-2">
-                      {[5, 4, 3, 2, 1].map((star) => {
-                        const count = ratingDistribution[star as keyof typeof ratingDistribution];
-                        const percentage = reviews.length > 0 ? Math.round((count / reviews.length) * 100) : 0;
-                        return (
-                          <div key={star} className="flex items-center gap-3 text-sm">
-                            <div className="w-12 text-zinc-500 dark:text-zinc-400 font-medium flex items-center gap-1">
-                              {star} <Star className="w-3 h-3" />
-                            </div>
-                            <div className="flex-1 h-2.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
-                              <div className="h-full bg-yellow-500 rounded-full" style={{ width: `${percentage}%` }} />
-                            </div>
-                            <div className="w-10 text-right text-zinc-500 dark:text-zinc-400">
-                              {percentage}%
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                <RatingDistributionSummary
+                  distribution={ratingDistribution}
+                  totalReviews={reviews.length}
+                  averageRating={actualRating}
+                  className="mb-8"
+                />
 
                 {isOwner && (
                   <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 rounded-xl border border-blue-100 dark:border-blue-900/50 text-sm flex items-start gap-3">
@@ -794,6 +828,7 @@ export default function ProjectDetailPage() {
                       publicKey={gate.publicKey}
                       onConnect={gate.connectWallet}
                       onDisconnect={gate.disconnectWallet}
+                      onRetry={gate.retryAccountLoad}
                       compact
                     />
                   </div>
@@ -816,7 +851,11 @@ export default function ProjectDetailPage() {
                   currentUserAddress={gate.publicKey}
                   onEdit={handleEdit}
                   onDelete={handleDelete}
+                  onVoteHelpful={handleVoteHelpful}
+                  onVoteUnhelpful={handleVoteUnhelpful}
                   onReport={handleReportReview}
+                  emptyMessage={projectEmptyMessage}
+                  emptyTitle={sortedReviews.length === 0 && reviews.length > 0 ? "No Matching Reviews" : undefined}
                 />
               </div>
             </div>
@@ -825,7 +864,14 @@ export default function ProjectDetailPage() {
             <div className="space-y-6">
               {/* Verification Status */}
               <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-6">
-                <h3 className="text-lg font-bold mb-4">Verification Status</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold">Verification Status</h3>
+                  {verificationError && (
+                    <Button variant="outline" size="sm" onClick={retryVerification}>
+                      Retry
+                    </Button>
+                  )}
+                </div>
                 <VerificationStatus initialProjectId={project.id} />
               </div>
 
@@ -925,6 +971,11 @@ export default function ProjectDetailPage() {
                     {abbreviateStellarAddress(project.ownerAddress)}
                   </p>
                 </div>
+              )}
+
+              {/* Contract Addresses */}
+              {project.contractAddresses && project.contractAddresses.length > 0 && (
+                <ContractAddressList addresses={project.contractAddresses} />
               )}
             </div>
           </div>

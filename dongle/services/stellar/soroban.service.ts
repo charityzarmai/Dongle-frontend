@@ -87,6 +87,8 @@ export interface ProjectData {
   githubUrl?: string;
   logoUrl: string;
   docsUrl: string;
+  auditReportUrl?: string;
+  bugBountyUrl?: string;
   owner: string;
   createdAt: string;
 }
@@ -99,6 +101,12 @@ export interface ProjectRegistrationParams {
   githubUrl?: string;
   logoUrl?: string;
   docsUrl?: string;
+  /**
+   * Optional list of Soroban contract IDs associated with the project.
+   * Each entry must be a valid 56-character address starting with 'C'.
+   * Empty strings are ignored.
+   */
+  contractAddresses?: string[];
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -248,6 +256,9 @@ export const sorobanService = {
       nativeToScVal(params.githubUrl),
       nativeToScVal(params.logoUrl),
       nativeToScVal(params.docsUrl),
+      nativeToScVal(
+        (params.contractAddresses ?? []).filter((a) => a.trim().length > 0),
+      ),
     ];
 
     const result = await executeContractTransaction(
@@ -299,20 +310,64 @@ export const sorobanService = {
     projectId: string,
     signal?: AbortSignal,
   ): Promise<"NONE" | "PENDING" | "VERIFIED" | "REJECTED"> {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
     try {
       const { verificationService } = await import("./verification.service");
       const status = await verificationService.getVerificationStatus(projectId);
+
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
       console.log(
         `[SorobanService] Verification status for ${projectId}: ${status}`,
       );
       return status;
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
       console.error(
         "[SorobanService] Error getting verification status:",
         error,
       );
       return "NONE";
     }
+  },
+
+  /**
+   * Returns verification status with project/request context for UI distinction.
+   */
+  async getVerificationRequestStatus(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    projectExists: boolean;
+    requestExists: boolean;
+    status: "NONE" | "PENDING" | "VERIFIED" | "REJECTED";
+    rejectionReason?: string;
+  }> {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const { verificationService } = await import("./verification.service");
+    const result = await verificationService.getRequestStatus(projectId);
+
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const status = result.request?.status ?? "NONE";
+    return {
+      projectExists: result.projectExists,
+      requestExists: result.requestExists,
+      status,
+      rejectionReason: result.request?.rejectionReason,
+    };
   },
 
   /**
@@ -333,6 +388,8 @@ export const sorobanService = {
           githubUrl: "https://github.com/example/soroban-swap",
           logoUrl: "https://example.com/logo1.png",
           docsUrl: "https://docs.soroban-swap.com",
+          auditReportUrl: "https://example.com/audit-soroban-swap.pdf",
+          bugBountyUrl: "https://example.com/bounty-soroban-swap",
           owner: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
           createdAt: "2024-11-10T00:00:00Z",
         },
@@ -387,6 +444,9 @@ export const sorobanService = {
       nativeToScVal(params.githubUrl),
       nativeToScVal(params.logoUrl),
       nativeToScVal(params.docsUrl),
+      nativeToScVal(
+        (params.contractAddresses ?? []).filter((a) => a.trim().length > 0),
+      ),
     ];
 
     const result = await executeContractTransaction(

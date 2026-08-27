@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useId, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { UPDATE_TYPES, UpdateType, ProjectUpdate } from "@/types/update";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { X } from "lucide-react";
+import { isBlank } from "@/lib/string";
 
 interface UpdateFormProps {
   projectId: string;
@@ -30,23 +32,36 @@ export default function UpdateForm({
   const [content, setContent] = useState(initialUpdate?.content || "");
   const [version, setVersion] = useState(initialUpdate?.version || "");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const updateTypeId = useId();
+  const versionId = useId();
+  const titleId = useId();
+  const contentId = useId();
+
+  const isDirty =
+    type !== (initialUpdate?.type || UPDATE_TYPES.ANNOUNCEMENT) ||
+    title !== (initialUpdate?.title || "") ||
+    content !== (initialUpdate?.content || "") ||
+    version !== (initialUpdate?.version || "");
+
+  useUnsavedChanges(isDirty, isSubmitting);
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
 
-    if (!title.trim()) {
+    if (isBlank(title)) {
       newErrors.title = "Title is required";
     } else if (title.length > 100) {
       newErrors.title = "Title must be 100 characters or less";
     }
 
-    if (!content.trim()) {
+    if (isBlank(content)) {
       newErrors.content = "Content is required";
     } else if (content.length < 20) {
       newErrors.content = "Content must be at least 20 characters";
     }
 
-    if (type === UPDATE_TYPES.RELEASE && !version.trim()) {
+    if (type === UPDATE_TYPES.RELEASE && isBlank(version)) {
       newErrors.version = "Version is required for releases";
     }
 
@@ -57,6 +72,7 @@ export default function UpdateForm({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (validate()) {
+      setIsSubmitting(true);
       onSubmit({
         type,
         title: title.trim(),
@@ -64,6 +80,11 @@ export default function UpdateForm({
         version: type === UPDATE_TYPES.RELEASE ? version.trim() : undefined,
       });
     }
+  };
+
+  const handleCancel = () => {
+    setIsSubmitting(true);
+    onCancel();
   };
 
   return (
@@ -74,7 +95,7 @@ export default function UpdateForm({
         </h3>
         <button
           type="button"
-          onClick={onCancel}
+          onClick={handleCancel}
           className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
           aria-label="Close update form"
         >
@@ -84,10 +105,11 @@ export default function UpdateForm({
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium mb-2">
+          <label htmlFor={updateTypeId} className="block text-sm font-medium mb-2">
             Update Type
           </label>
           <select
+            id={updateTypeId}
             value={type}
             onChange={(e) => setType(e.target.value as UpdateType)}
             className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
@@ -102,10 +124,11 @@ export default function UpdateForm({
 
         {type === UPDATE_TYPES.RELEASE && (
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label htmlFor={versionId} className="block text-sm font-medium mb-2">
               Version <span className="text-red-500">*</span>
             </label>
             <input
+              id={versionId}
               type="text"
               value={version}
               onChange={(e) => setVersion(e.target.value)}
@@ -123,10 +146,11 @@ export default function UpdateForm({
         )}
 
         <div>
-          <label className="block text-sm font-medium mb-2">
+          <label htmlFor={titleId} className="block text-sm font-medium mb-2">
             Title <span className="text-red-500">*</span>
           </label>
           <input
+            id={titleId}
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -149,10 +173,11 @@ export default function UpdateForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-2">
+          <label htmlFor={contentId} className="block text-sm font-medium mb-2">
             Content <span className="text-red-500">*</span>
           </label>
           <textarea
+            id={contentId}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="Describe your update in detail..."
@@ -175,7 +200,7 @@ export default function UpdateForm({
           <Button
             type="button"
             variant="outline"
-            onClick={onCancel}
+            onClick={handleCancel}
             className="flex-1"
           >
             Cancel

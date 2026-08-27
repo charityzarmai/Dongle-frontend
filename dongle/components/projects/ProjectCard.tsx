@@ -10,17 +10,21 @@ import { VerificationBadge, VerificationStatus } from "@/components/projects/Ver
 import { IconButton } from "@/components/ui/IconButton";
 import { useComparison } from "@/context/comparison.context";
 import { useSavedProjects } from "@/hooks/useSavedProjects";
+import { getPrefetchValue } from "@/lib/prefetch-config";
+import { highlightText } from "@/lib/utils";
 
 interface ProjectCardProps {
   project: Project;
   verificationStatus?: VerificationStatus;
   showCompareCheckbox?: boolean;
+  highlightTerm?: string;
 }
 
 export const ProjectCard = ({
   project,
   verificationStatus,
   showCompareCheckbox = true,
+  highlightTerm = "",
 }: ProjectCardProps) => {
   const { addProject, removeProject, isSelected, canAddMore } = useComparison();
   const { isProjectSaved, toggleSavedProject, canManageSavedProjects } = useSavedProjects();
@@ -28,13 +32,19 @@ export const ProjectCard = ({
   const selected = isSelected(project.id);
   const isSaved = isProjectSaved(project.id);
 
-  const handleCompareToggle = (e: React.MouseEvent) => {
+  const handleCompareToggle = (e: React.SyntheticEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (selected) {
       removeProject(project.id);
     } else if (canAddMore) {
       addProject(project);
+    }
+  };
+
+  const handleCompareKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      handleCompareToggle(e);
     }
   };
 
@@ -68,6 +78,7 @@ export const ProjectCard = ({
         <IconButton
           type="button"
           onClick={handleCompareToggle}
+          onKeyDown={handleCompareKeyDown}
           disabled={!selected && !canAddMore}
           aria-pressed={selected}
           aria-label={
@@ -78,7 +89,7 @@ export const ProjectCard = ({
               : `Add ${project.name} to comparison`
           }
           size="md"
-          className={`absolute left-4 top-4 z-10 rounded-full ${
+          className={`absolute left-4 top-4 z-10 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${
             selected
               ? "bg-blue-500 text-white hover:bg-blue-600 hover:text-white"
               : !canAddMore
@@ -97,7 +108,7 @@ export const ProjectCard = ({
         </IconButton>
       )}
 
-      <Link href={`/projects/${project.id}`} className="flex h-full flex-col">
+      <Link href={`/projects/${project.id}`} prefetch={getPrefetchValue("project-detail")} className="flex h-full flex-col">
         <ProjectImage
           logoUrl={project.logoUrl}
           name={project.name}
@@ -119,11 +130,29 @@ export const ProjectCard = ({
           </div>
         </div>
         <h3 className="text-xl font-bold mb-2 group-hover:text-blue-500 transition-colors">
-          {project.name}
+          {highlightTerm
+            ? highlightText(project.name, highlightTerm)
+            : project.name}
         </h3>
-        <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-6 line-clamp-2 grow">
-          {project.description}
+        <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-4 line-clamp-2 grow">
+          {highlightTerm
+            ? highlightText(project.description, highlightTerm)
+            : project.description}
         </p>
+        {project.tags && project.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-4 px-2">
+            {project.tags.map((tag) => (
+              <span
+                key={tag}
+                className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full"
+              >
+                {highlightTerm
+                  ? highlightText(tag, highlightTerm)
+                  : tag}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex justify-between items-center text-xs text-zinc-400 dark:text-zinc-500 mt-auto">
           <span>{project.reviews} reviews</span>
           <span>Added {formatDate(project.createdAt, "short")}</span>
