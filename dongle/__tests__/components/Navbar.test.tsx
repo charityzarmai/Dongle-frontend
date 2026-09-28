@@ -26,6 +26,13 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("@/hooks/useWatchlist", () => ({
+  useWatchlist: () => ({
+    watchlistCount: 0,
+    canManageWatchlist: false,
+  }),
+}));
+
 describe("Navbar active navigation", () => {
   beforeEach(() => {
     mockPathname.mockReturnValue("/");
@@ -67,6 +74,7 @@ describe("Navbar active navigation", () => {
     ["/discover", "Discover"],
     ["/reviews", "Reviews"],
     ["/verify", "Verify"],
+    ["/analytics", "Analytics"],
     ["/projects/new", "Submit Project"],
     ["/profile", "Profile"],
   ])("marks %s as active on desktop", (path, label) => {
@@ -129,5 +137,12 @@ describe("Navbar active navigation", () => {
 
     const closeButton = screen.getByRole("button", { name: /close menu/i });
     expect(closeButton).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("renders the language selector and sign-in control", () => {
+    render(<Navbar />);
+    expect(screen.getByRole("button", { name: /select language/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open notifications/i })).toBeInTheDocument();
   });
 });

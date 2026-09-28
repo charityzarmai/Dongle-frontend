@@ -8,10 +8,9 @@ import { CATEGORY_DISPLAY_TO_FORM } from "@/types/project";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import WalletStatePanel, {
-  WalletStateLoadingPanel,
-} from "@/components/wallet/WalletStatePanel";
+import WalletGate from "@/components/wallet/WalletGate";
 import { useWalletPageGate } from "@/hooks/useWalletPageGate";
+import { FormSkeleton } from "@/components/ui/FormSkeleton";
 
 const EDIT_PURPOSE =
   "Connect Freighter to edit and update your project on-chain.";
@@ -67,6 +66,11 @@ export default function EditProjectPage() {
       <main className={pageClass}>
         <div className="container mx-auto px-4">
           <div className="max-w-xl mx-auto animate-fade-in">
+            <WalletGate
+              gate={gate}
+              pagePurpose={EDIT_PURPOSE}
+              loadingMessage="Verifying your wallet..."
+            />
             {gate.state === "account-loading" ? (
               <WalletStateLoadingPanel message="Verifying your wallet..." />
             ) : (
@@ -90,13 +94,7 @@ export default function EditProjectPage() {
     return (
       <main className={pageClass}>
         <div className="container mx-auto px-4">
-          <div className="max-w-2xl mx-auto animate-pulse space-y-4">
-            <div className="h-8 bg-zinc-200 dark:bg-zinc-800 rounded" />
-            <div className="h-4 bg-zinc-200 dark:bg-zinc-800 rounded w-2/3" />
-            <div className="h-12 bg-zinc-200 dark:bg-zinc-800 rounded" />
-            <div className="h-12 bg-zinc-200 dark:bg-zinc-800 rounded" />
-            <div className="h-24 bg-zinc-200 dark:bg-zinc-800 rounded" />
-          </div>
+          <FormSkeleton className="max-w-2xl mx-auto" ariaLabel="Loading project details..." />
         </div>
       </main>
     );
